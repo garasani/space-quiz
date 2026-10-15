@@ -19,7 +19,7 @@
     body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.6 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; min-height: 100svh; }
     body::before { content: ""; position: fixed; inset: 0; pointer-events: none; background: radial-gradient(ellipse at 50% 12%, #af9aee12, transparent 55%); }
     button { font: inherit; }
-    button:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+    button:focus-visible, textarea:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
     [hidden] { display: none !important; }
     .shell { width: min(100% - 40px, 504px); margin: 0 auto; padding: 35px 0 24px; position: relative; }
     .brand { display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 19px; font-weight: 750; letter-spacing: -.6px; }
@@ -79,6 +79,20 @@
     .stats small { font-size: 11px; color: var(--muted); }
     .stats .right { color: var(--green); }
     .stats .missed { color: var(--red); }
+    .secondary { width: 100%; margin-top: 12px; padding: 11px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--soft); color: var(--text); cursor: pointer; font-size: 14px; }
+    .secondary:hover:not(:disabled) { border-color: var(--accent); }
+    .secondary:disabled { cursor: wait; opacity: .6; }
+    .review { text-align: left; margin-top: 16px; }
+    .review-item { padding: 16px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+    .review-item h3 { font-size: 15px; margin: 0 0 10px; }
+    .review-item p { font-size: 14px; margin: 6px 0; }
+    .review-wrong { color: var(--red); }
+    .review-correct { color: var(--green); }
+    .review-explanation { color: var(--muted); }
+    .copy-status { font-size: 13px; color: var(--muted); margin: 10px 0 0; }
+    .copy-status:empty { display: none; }
+    .manual-copy { text-align: left; margin-top: 12px; font-size: 13px; }
+    .manual-copy textarea { display: block; width: 100%; margin-top: 7px; min-height: 110px; resize: vertical; padding: 10px; font: inherit; background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 8px; }
     .enter { animation: rise .3s ease; }
     @keyframes float { 50% { transform: translateY(-7px) rotate(-3deg); } }
     @keyframes twinkle { to { opacity: .3; } }
@@ -149,6 +163,14 @@
       <div class="result-score" id="result-score"></div>
       <p class="result-caption" id="result-caption"></p>
       <div class="stats"><div><strong class="right" id="correct-total"></strong><small>맞힌 문제</small></div><div><strong class="missed" id="wrong-total"></strong><small>더 알아갈 문제</small></div></div>
+      <button class="secondary" id="review-toggle" aria-expanded="false" aria-controls="review">틀린 문제 복습 펼치기</button>
+      <div class="review" id="review" hidden></div>
+      <button class="secondary" id="copy-result">결과 복사</button>
+      <p class="copy-status" id="copy-status" role="status" aria-live="polite" aria-atomic="true"></p>
+      <div class="manual-copy" id="manual-copy" hidden>
+        <label for="share-text">아래 텍스트를 선택해 직접 복사해 주세요.</label>
+        <textarea id="share-text" readonly></textarea>
+      </div>
       <button class="primary" id="restart">다시 탐험하기 <span aria-hidden="true">↻</span></button>
       <p class="hint">호기심이 있는 곳에 새로운 우주가 열려요.</p>
     </section>
@@ -172,6 +194,35 @@
     let current = 0;
     let score = 0;
     let answered = false;
+    let roundQuestions = [];
+    let responses = [];
+    let roundId = 0;
+    let shareText = "";
+
+    function startRound(focus = false) {
+      roundId++;
+      current = 0;
+      score = 0;
+      responses = [];
+      roundQuestions = [...questions];
+      for (let i = roundQuestions.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [roundQuestions[i], roundQuestions[j]] = [roundQuestions[j], roundQuestions[i]];
+      }
+      shareText = "";
+      $("review").replaceChildren();
+      $("review").hidden = true;
+      $("review-toggle").setAttribute("aria-expanded", "false");
+      $("review-toggle").textContent = "틀린 문제 복습 펼치기";
+      $("copy-status").textContent = "";
+      $("manual-copy").hidden = true;
+      $("share-text").value = "";
+      $("copy-result").disabled = false;
+      $("results").hidden = true;
+      $("quiz").hidden = false;
+      updateProgress(0);
+      renderQuestion(focus);
+    }
 
     function updateProgress(completed) {
       $("count").textContent = `· ${completed} / ${questions.length}`;
@@ -182,7 +233,7 @@
 
     function renderQuestion(focus = false) {
       answered = false;
-      const item = questions[current];
+      const item = roundQuestions[current];
       $("category").textContent = item.category;
       $("question-number").textContent = `${String(current + 1).padStart(2, "0")} / ${questions.length}`;
       $("question").textContent = item.question;
@@ -214,8 +265,9 @@
     function selectAnswer(selected) {
       if (answered) return;
       answered = true;
-      const item = questions[current];
+      const item = roundQuestions[current];
       const correct = selected === item.correct;
+      responses.push({ item, selected });
       if (correct) score++;
       Array.from($("answers").children).forEach((button, index) => {
         button.disabled = true;
@@ -261,6 +313,34 @@
       $("result-caption").textContent = `탐험 정답률 ${score * 10}%`;
       $("correct-total").textContent = score;
       $("wrong-total").textContent = questions.length - score;
+      const missed = responses.filter(({ item, selected }) => selected !== item.correct);
+      $("review").replaceChildren();
+      if (missed.length === 0) {
+        const message = document.createElement("p");
+        message.textContent = "모든 문제를 맞혔어요!";
+        $("review").append(message);
+      } else {
+        missed.forEach(({ item, selected }) => {
+          const article = document.createElement("article");
+          article.className = "review-item";
+          const heading = document.createElement("h3");
+          heading.textContent = item.question;
+          article.append(heading);
+          [
+            ["review-wrong", `내가 선택한 답: ${item.answers[selected]}`],
+            ["review-correct", `정답: ${item.answers[item.correct]}`],
+            ["review-explanation", item.explanation]
+          ].forEach(([className, text]) => {
+            const paragraph = document.createElement("p");
+            paragraph.className = className;
+            paragraph.textContent = text;
+            article.append(paragraph);
+          });
+          $("review").append(article);
+        });
+      }
+      shareText = `Orbit 우주 탐험 퀴즈 ${tier[0]} | ${score}/${questions.length}점 · 정답률 ${score / questions.length * 100}% | ${tier[1]}`;
+      $("share-text").value = shareText;
       $("results").hidden = false;
       $("results").classList.add("enter");
       $("result-title").focus({ preventScroll: true });
@@ -273,15 +353,46 @@
       else { current++; renderQuestion(true); }
     });
     $("restart").addEventListener("click", () => {
-      current = 0;
-      score = 0;
-      $("results").hidden = true;
-      $("quiz").hidden = false;
-      updateProgress(0);
-      renderQuestion(true);
+      startRound(true);
       $("quiz").scrollIntoView({ block: "nearest" });
     });
-    renderQuestion();
+    $("review-toggle").addEventListener("click", () => {
+      const expanded = $("review-toggle").getAttribute("aria-expanded") === "true";
+      $("review-toggle").setAttribute("aria-expanded", String(!expanded));
+      $("review-toggle").textContent = expanded ? "틀린 문제 복습 펼치기" : "틀린 문제 복습 접기";
+      $("review").hidden = expanded;
+    });
+
+    function showManualCopy(reason) {
+      $("copy-status").textContent = reason;
+      $("manual-copy").hidden = false;
+      $("share-text").focus();
+      $("share-text").select();
+    }
+
+    $("copy-result").addEventListener("click", async () => {
+      const copyingRound = roundId;
+      $("copy-status").textContent = "";
+      $("manual-copy").hidden = true;
+      if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+        showManualCopy("이 브라우저 환경에서는 자동 복사를 지원하지 않아요. 아래 결과를 직접 복사해 주세요.");
+        return;
+      }
+      $("copy-result").disabled = true;
+      try {
+        await navigator.clipboard.writeText(shareText);
+        if (copyingRound === roundId) $("copy-status").textContent = "탐험 결과를 복사했어요!";
+      } catch (error) {
+        if (copyingRound === roundId) {
+          showManualCopy(error.name === "NotAllowedError"
+            ? "브라우저에서 클립보드 접근을 허용하지 않았어요. 아래 결과를 직접 복사해 주세요."
+            : "클립보드에 복사하지 못했어요. 아래 결과를 직접 복사해 주세요.");
+        }
+      } finally {
+        if (copyingRound === roundId) $("copy-result").disabled = false;
+      }
+    });
+    startRound();
   </script>
 </body>
 </html>
